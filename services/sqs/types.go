@@ -130,8 +130,8 @@ type ReceiveMessageInput struct {
 }
 
 type ReceiveMessageOutput struct {
-	XMLName xml.Name `xml:"ReceiveMessageResult"`
-	Message []APIMessage
+	XMLName xml.Name     `xml:"ReceiveMessageResult"`
+	Message []APIMessage `json:"Messages"`
 }
 
 type APIAttributes map[string]string
