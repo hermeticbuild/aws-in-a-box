@@ -50,7 +50,6 @@ func makeClientServerPair() (*sqs.Client, *http.Server) {
 }
 
 func TestSendReceiveMessage_RoundtripAttributes(t *testing.T) {
-	t.Skip("SQS on JSON doesn't work correctly...")
 	ctx := context.Background()
 	client, srv := makeClientServerPair()
 	defer srv.Shutdown(ctx)
@@ -125,8 +124,62 @@ func TestSendReceiveMessage_RoundtripAttributes(t *testing.T) {
 	}
 }
 
+func TestReceiveMessageOutput_MultipleMessages(t *testing.T) {
+	ctx := context.Background()
+	client, srv := makeClientServerPair()
+	defer srv.Shutdown(ctx)
+
+	resp, err := client.CreateQueue(ctx, &sqs.CreateQueueInput{
+		QueueName: aws.String("queue"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bodies := []string{"message-1", "message-2", "message-3"}
+	for _, body := range bodies {
+		_, err = client.SendMessage(ctx, &sqs.SendMessageInput{
+			QueueUrl:    resp.QueueUrl,
+			MessageBody: aws.String(body),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	receiveResp, err := client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+		QueueUrl:            resp.QueueUrl,
+		MaxNumberOfMessages: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receiveResp.Messages) != 3 {
+		t.Fatalf("Expected 3 messages, got %d", len(receiveResp.Messages))
+	}
+
+	var receivedBodies []string
+	for _, msg := range receiveResp.Messages {
+		if msg.Body == nil {
+			t.Fatal("Message body should not be nil")
+		}
+		if msg.MessageId == nil || *msg.MessageId == "" {
+			t.Fatal("Message should have a MessageId")
+		}
+		if msg.ReceiptHandle == nil || *msg.ReceiptHandle == "" {
+			t.Fatal("Message should have a ReceiptHandle")
+		}
+		receivedBodies = append(receivedBodies, *msg.Body)
+	}
+
+	slices.Sort(receivedBodies)
+	slices.Sort(bodies)
+	if !slices.Equal(receivedBodies, bodies) {
+		t.Fatalf("Expected bodies %v, got %v", bodies, receivedBodies)
+	}
+}
+
 func TestMessageVisibility(t *testing.T) {
-	t.Skip("SQS on JSON doesn't work correctly...")
 	ctx := context.Background()
 	client, srv := makeClientServerPair()
 	defer srv.Shutdown(ctx)
