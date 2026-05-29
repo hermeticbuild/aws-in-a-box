@@ -14,7 +14,7 @@ require (
 	github.com/gofrs/uuid/v5 v5.0.0
 	github.com/google/go-cmp v0.6.0
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9
-	golang.org/x/net v0.22.0
+	golang.org/x/net v0.35.0
 )
 
 require (
@@ -29,6 +29,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.17.17 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/sys v0.18.0
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/sys v0.30.0
+	golang.org/x/text v0.22.0 // indirect
 )
