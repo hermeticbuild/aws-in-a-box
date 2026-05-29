@@ -1,14 +1,15 @@
 {
-  "homepage": "https://github.com/dzbarsky/aws-in-a-box",
+  "homepage": "https://github.com/hermeticbuild/aws-in-a-box",
   "maintainers": [
     {
       "email": "dzbarsky@gmail.com",
       "github": "dzbarsky",
+      "github_user_id": 1565842,
       "name": "David Zbarsky"
     }
   ],
   "repository": [
-    "github:dzbarsky/aws-in-a-box"
+    "github:hermeticbuild/aws-in-a-box"
   ],
   "versions": [],
   "yanked_versions": {}

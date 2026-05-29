@@ -1,5 +1,5 @@
 {
   "integrity": "",
-  "strip_prefix": "aws-in-a-box-{VERSION}",
-  "url": "https://github.com/dzbarsky/aws-in-a-box/releases/download/{TAG}/aws-in-a-box-{TAG}.tar.gz"
+  "strip_prefix": "{REPO}-{VERSION}",
+  "url": "https://github.com/{OWNER}/{REPO}/releases/download/{TAG}/{REPO}-{TAG}.tar.gz"
 }
