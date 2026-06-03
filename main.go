@@ -69,6 +69,7 @@ func main() {
 	s3InitialBuckets := flag.String("s3InitialBuckets", "", "Buckets to create at startup. Example: bucket1,bucket2,bucket3")
 
 	enableSQS := flag.Bool("enableSQS", true, "Enable SQS service")
+	sqsInitialQueues := flag.String("sqsInitialQueues", "", "Queues to create at startup. Example: queue1,queue2,queue3")
 
 	flag.Parse()
 
@@ -150,6 +151,14 @@ func main() {
 			Logger:       logger,
 			ArnGenerator: arnGenerator,
 		})
+		for _, name := range strings.Split(*sqsInitialQueues, ",") {
+			if name == "" {
+				continue
+			}
+			s.CreateQueue(sqs.CreateQueueInput{
+				QueueName: name,
+			})
+		}
 		// Register JSON handler
 		s.RegisterHTTPHandlers(logger, methodRegistry)
 		// Register form data handler

@@ -19,6 +19,10 @@ import (
 )
 
 func makeClientServerPair() (*sqs.Client, *http.Server) {
+	return makeClientServerPairWithInitialQueues(nil)
+}
+
+func makeClientServerPairWithInitialQueues(initialQueues []string) (*sqs.Client, *http.Server) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		panic(err)
@@ -31,6 +35,11 @@ func makeClientServerPair() (*sqs.Client, *http.Server) {
 	})
 	if err != nil {
 		panic(err)
+	}
+	for _, name := range initialQueues {
+		impl.CreateQueue(sqsImpl.CreateQueueInput{
+			QueueName: name,
+		})
 	}
 	methodRegistry := make(map[string]http.HandlerFunc)
 	impl.RegisterHTTPHandlers(slog.Default(), methodRegistry)
@@ -263,5 +272,48 @@ func TestMessageVisibility(t *testing.T) {
 	}
 	if len(receiveResp.Messages) != 0 {
 		t.Fatal("Deleted message should not be returned")
+	}
+}
+
+func TestInitialQueues(t *testing.T) {
+	ctx := context.Background()
+	client, srv := makeClientServerPairWithInitialQueues([]string{"queue-a", "queue-b"})
+	defer srv.Shutdown(ctx)
+
+	listResp, err := client.ListQueues(ctx, &sqs.ListQueuesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.QueueUrls) != 2 {
+		t.Fatalf("Expected 2 queues, got %d", len(listResp.QueueUrls))
+	}
+
+	urlResp, err := client.GetQueueUrl(ctx, &sqs.GetQueueUrlInput{
+		QueueName: aws.String("queue-a"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := "hello from pre-created queue"
+	_, err = client.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl:    urlResp.QueueUrl,
+		MessageBody: aws.String(body),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	receiveResp, err := client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+		QueueUrl: urlResp.QueueUrl,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receiveResp.Messages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(receiveResp.Messages))
+	}
+	if *receiveResp.Messages[0].Body != body {
+		t.Fatalf("Expected body %q, got %q", body, *receiveResp.Messages[0].Body)
 	}
 }
