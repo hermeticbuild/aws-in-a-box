@@ -39,3 +39,7 @@ func InvalidIdFormat(message string) *awserrors.Error {
 func ReceiptHandleIsInvalid(message string) *awserrors.Error {
 	return awserrors.Generate400Exception("ReceiptHandleIsInvalid", message)
 }
+
+func MissingParameter(message string) *awserrors.Error {
+	return awserrors.Generate400Exception("MissingParameter", message)
+}

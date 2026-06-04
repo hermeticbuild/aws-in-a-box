@@ -3,6 +3,7 @@ package sqs
 import (
 	"bytes"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"log/slog"
@@ -51,6 +52,16 @@ type Message struct {
 	Deleted      bool
 	VisibleAt    time.Time
 	DelayedUntil time.Time
+
+	GroupId         string
+	DeduplicationId string
+}
+
+const deduplicationWindow = 5 * time.Minute
+
+type deduplicationEntry struct {
+	Timestamp time.Time
+	MessageId string
 }
 
 type Queue struct {
@@ -58,15 +69,20 @@ type Queue struct {
 	CreationTimestamp int64
 	Attributes        map[string]string
 	URL               string
+	IsFifo            bool
 
 	// Mutable
 	Messages []*Message
 	Tags     map[string]string
 
 	// Attributes
-	VisibilityTimeout  time.Duration
-	MaximumMessageSize int
-	DelayDuration      time.Duration
+	VisibilityTimeout         time.Duration
+	MaximumMessageSize        int
+	DelayDuration             time.Duration
+	ContentBasedDeduplication bool
+
+	// FIFO state
+	DeduplicationIds map[string]deduplicationEntry
 }
 
 type SQS struct {
@@ -102,7 +118,7 @@ func (s *SQS) CreateQueue(input CreateQueueInput) (*CreateQueueOutput, *awserror
 	defer s.mu.Unlock()
 
 	if queue, ok := s.queuesByName[input.QueueName]; ok {
-		if maps.Equal(queue.Attributes, input.Attribute) {
+		if maps.Equal(queue.Attributes, input.Attributes) {
 			return &CreateQueueOutput{
 				QueueUrl: queue.URL,
 			}, nil
@@ -110,19 +126,29 @@ func (s *SQS) CreateQueue(input CreateQueueInput) (*CreateQueueOutput, *awserror
 		return nil, QueueNameExists("")
 	}
 
+	isFifo := strings.HasSuffix(input.QueueName, ".fifo")
+	if input.Attributes["FifoQueue"] == "true" && !isFifo {
+		return nil, ValidationException("FIFO queue name must end with .fifo")
+	}
+
 	url := s.getQueueUrl(input.QueueName)
 
 	queue := &Queue{
-		Attributes: input.Attribute,
-		Tags:       input.Tag,
+		Attributes: input.Attributes,
+		Tags:       input.Tags,
 		URL:        url,
+		IsFifo:     isFifo,
 
 		VisibilityTimeout:  defaultVisibilityTimeout,
 		MaximumMessageSize: defaultMaximumMessageSize,
 		DelayDuration:      defaultDelayDuration,
 	}
 
-	err := s.lockedSetQueueAttributes(queue, input.Attribute)
+	if isFifo {
+		queue.DeduplicationIds = make(map[string]deduplicationEntry)
+	}
+
+	err := s.lockedSetQueueAttributes(queue, input.Attributes)
 	if err != nil {
 		return nil, err
 	}
@@ -181,31 +207,75 @@ func (s *SQS) SendMessage(input SendMessageInput) (*SendMessageOutput, *awserror
 		return nil, ValidationException("Message too long")
 	}
 
+	if queue.IsFifo && input.MessageGroupId == "" {
+		return nil, MissingParameter("MessageGroupId is required for FIFO queues")
+	}
+
 	delayDuration := time.Duration(input.DelaySeconds)
 	if delayDuration == 0 {
 		delayDuration = queue.DelayDuration
 	}
 
 	now := time.Now()
-
 	MD5OfBody := hexMD5([]byte(input.MessageBody))
+	messageId := uuid.Must(uuid.NewV4())
+
+	var dedupId string
+	if queue.IsFifo {
+		dedupId = input.MessageDeduplicationId
+		if dedupId == "" && queue.ContentBasedDeduplication {
+			dedupId = hexSHA256([]byte(input.MessageBody))
+		}
+		if dedupId == "" {
+			return nil, MissingParameter("MessageDeduplicationId is required when ContentBasedDeduplication is disabled")
+		}
+
+		// Evict expired dedup entries, then check for duplicates.
+		for id, entry := range queue.DeduplicationIds {
+			if now.Sub(entry.Timestamp) > deduplicationWindow {
+				delete(queue.DeduplicationIds, id)
+			}
+		}
+		// On a dedup hit, return the original message's ID so callers can
+		// correlate it with the message they'll later receive.
+		if entry, exists := queue.DeduplicationIds[dedupId]; exists {
+			return &SendMessageOutput{
+				MD5OfMessageBody: MD5OfBody,
+				MessageId:        entry.MessageId,
+			}, nil
+		}
+
+		queue.DeduplicationIds[dedupId] = deduplicationEntry{
+			Timestamp: now,
+			MessageId: messageId.String(),
+		}
+	}
+
 	queue.Messages = append(queue.Messages, &Message{
-		UUID:                    uuid.Must(uuid.NewV4()),
+		UUID:                    messageId,
 		Body:                    input.MessageBody,
 		MD5OfBody:               MD5OfBody,
 		MessageAttributes:       input.MessageAttributes,
 		MessageSystemAttributes: input.MessageSystemAttributes,
 		VisibleAt:               now,
 		DelayedUntil:            now.Add(delayDuration),
+		GroupId:         input.MessageGroupId,
+		DeduplicationId: dedupId,
 	})
 
 	return &SendMessageOutput{
 		MD5OfMessageBody: MD5OfBody,
+		MessageId:        messageId.String(),
 	}, nil
 }
 
 func hexMD5(data []byte) string {
 	hash := md5.Sum(data)
+	return hex.EncodeToString(hash[:])
+}
+
+func hexSHA256(data []byte) string {
+	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
 }
 
@@ -334,6 +404,27 @@ func (s *SQS) ReceiveMessage(input ReceiveMessageInput) (*ReceiveMessageOutput, 
 		visibilityTimeout = queue.VisibilityTimeout
 	}
 
+	// A FIFO message group is "in flight" when one of its messages has been
+	// received but not yet deleted (its visibility timeout hasn't expired).
+	// We must not deliver any further message from such a group until the
+	// outstanding one is deleted or becomes visible again, otherwise ordering
+	// within the group would be violated.
+	var groupsInFlight map[string]bool
+	if queue.IsFifo {
+		groupsInFlight = make(map[string]bool)
+		for _, message := range queue.Messages {
+			if message.Deleted || message.GroupId == "" {
+				continue
+			}
+			// VisibleAt in the future means the message has been received and
+			// is still within its visibility timeout (an unreceived message
+			// keeps its send-time VisibleAt, which is in the past).
+			if message.VisibleAt.After(now) {
+				groupsInFlight[message.GroupId] = true
+			}
+		}
+	}
+
 	output := &ReceiveMessageOutput{}
 	for _, message := range queue.Messages {
 		if message.Deleted {
@@ -348,6 +439,10 @@ func (s *SQS) ReceiveMessage(input ReceiveMessageInput) (*ReceiveMessageOutput, 
 			continue
 		}
 
+		if queue.IsFifo && message.GroupId != "" && groupsInFlight[message.GroupId] {
+			continue
+		}
+
 		output.Message = append(output.Message, APIMessage{
 			Body:              message.Body,
 			MD5OfBody:         message.MD5OfBody,
@@ -359,6 +454,13 @@ func (s *SQS) ReceiveMessage(input ReceiveMessageInput) (*ReceiveMessageOutput, 
 		})
 
 		message.VisibleAt = now.Add(visibilityTimeout)
+
+		// Limitation: we deliver at most one message per group per call. Real
+		// SQS can return several ordered messages from the same group in a
+		// single ReceiveMessage; this is simpler and still preserves ordering.
+		if queue.IsFifo && message.GroupId != "" {
+			groupsInFlight[message.GroupId] = true
+		}
 
 		if len(output.Message) == input.MaxNumberOfMessages {
 			break
@@ -540,6 +642,8 @@ func (s *SQS) lockedSetQueueAttributes(queue *Queue, attributes map[string]strin
 			}
 
 			queue.DelayDuration = time.Duration(delay) * time.Second
+		} else if k == "ContentBasedDeduplication" {
+			queue.ContentBasedDeduplication = v == "true"
 		}
 	}
 
