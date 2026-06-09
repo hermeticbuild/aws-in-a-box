@@ -157,8 +157,8 @@ func main() {
 			}
 			attrs := map[string]string{}
 			if strings.HasSuffix(name, ".fifo") {
-				attrs["FifoQueue"] = "true"
-				attrs["ContentBasedDeduplication"] = "true"
+				attrs[sqs.AttrFifoQueue] = "true"
+				attrs[sqs.AttrContentBasedDeduplication] = "true"
 			}
 			s.CreateQueue(sqs.CreateQueueInput{
 				QueueName:  name,

@@ -323,10 +323,10 @@ func TestInitialQueues(t *testing.T) {
 func createFifoQueue(t *testing.T, ctx context.Context, client *sqs.Client, name string) string {
 	t.Helper()
 	resp, err := client.CreateQueue(ctx, &sqs.CreateQueueInput{
-		QueueName: aws.String(name),
+		QueueName: &name,
 		Attributes: map[string]string{
-			"FifoQueue":                 "true",
-			"ContentBasedDeduplication": "true",
+			sqsImpl.AttrFifoQueue:                 "true",
+			sqsImpl.AttrContentBasedDeduplication: "true",
 		},
 	})
 	if err != nil {
@@ -340,9 +340,9 @@ func createFifoQueue(t *testing.T, ctx context.Context, client *sqs.Client, name
 func createFifoQueueNoDedup(t *testing.T, ctx context.Context, client *sqs.Client, name string) string {
 	t.Helper()
 	resp, err := client.CreateQueue(ctx, &sqs.CreateQueueInput{
-		QueueName: aws.String(name),
+		QueueName: &name,
 		Attributes: map[string]string{
-			"FifoQueue": "true",
+			sqsImpl.AttrFifoQueue: "true",
 		},
 	})
 	if err != nil {
@@ -416,7 +416,7 @@ func TestFifoQueue_Validation(t *testing.T) {
 		_, err := client.CreateQueue(ctx, &sqs.CreateQueueInput{
 			QueueName: aws.String("not-fifo-named"),
 			Attributes: map[string]string{
-				"FifoQueue": "true",
+				sqsImpl.AttrFifoQueue: "true",
 			},
 		})
 		if !isErrorCode(err, "ValidationException", "") {

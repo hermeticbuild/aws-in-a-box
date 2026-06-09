@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"unsafe"
 	"log/slog"
 	"maps"
 	"regexp"
@@ -21,6 +22,9 @@ import (
 )
 
 const (
+	AttrFifoQueue                 = "FifoQueue"
+	AttrContentBasedDeduplication = "ContentBasedDeduplication"
+
 	defaultVisibilityTimeout    = 30 * time.Second
 	maxVisibilityTimeoutSeconds = 12 * 3600
 
@@ -127,8 +131,12 @@ func (s *SQS) CreateQueue(input CreateQueueInput) (*CreateQueueOutput, *awserror
 	}
 
 	isFifo := strings.HasSuffix(input.QueueName, ".fifo")
-	if input.Attributes["FifoQueue"] == "true" && !isFifo {
+	fifoAttr := input.Attributes[AttrFifoQueue]
+	if fifoAttr == "true" && !isFifo {
 		return nil, ValidationException("FIFO queue name must end with .fifo")
+	}
+	if fifoAttr != "" && fifoAttr != "true" {
+		return nil, ValidationException("Invalid value for the parameter FifoQueue")
 	}
 
 	url := s.getQueueUrl(input.QueueName)
@@ -217,14 +225,14 @@ func (s *SQS) SendMessage(input SendMessageInput) (*SendMessageOutput, *awserror
 	}
 
 	now := time.Now()
-	MD5OfBody := hexMD5([]byte(input.MessageBody))
+	MD5OfBody := hexMD5(input.MessageBody)
 	messageId := uuid.Must(uuid.NewV4())
 
 	var dedupId string
 	if queue.IsFifo {
 		dedupId = input.MessageDeduplicationId
 		if dedupId == "" && queue.ContentBasedDeduplication {
-			dedupId = hexSHA256([]byte(input.MessageBody))
+			dedupId = hexSHA256(input.MessageBody)
 		}
 		if dedupId == "" {
 			return nil, MissingParameter("MessageDeduplicationId is required when ContentBasedDeduplication is disabled")
@@ -269,13 +277,17 @@ func (s *SQS) SendMessage(input SendMessageInput) (*SendMessageOutput, *awserror
 	}, nil
 }
 
-func hexMD5(data []byte) string {
-	hash := md5.Sum(data)
+func stringBytes(s string) []byte {
+	return unsafe.Slice(unsafe.StringData(s), len(s))
+}
+
+func hexMD5(s string) string {
+	hash := md5.Sum(stringBytes(s))
 	return hex.EncodeToString(hash[:])
 }
 
-func hexSHA256(data []byte) string {
-	hash := sha256.Sum256(data)
+func hexSHA256(s string) string {
+	hash := sha256.Sum256(stringBytes(s))
 	return hex.EncodeToString(hash[:])
 }
 
@@ -642,7 +654,7 @@ func (s *SQS) lockedSetQueueAttributes(queue *Queue, attributes map[string]strin
 			}
 
 			queue.DelayDuration = time.Duration(delay) * time.Second
-		} else if k == "ContentBasedDeduplication" {
+		} else if k == AttrContentBasedDeduplication {
 			queue.ContentBasedDeduplication = v == "true"
 		}
 	}
