@@ -102,7 +102,11 @@ func unmarshal(r *http.Request, target any) error {
 			for i := 1; ; i++ {
 				// TODO(zbarsky): this is pretty HAX way to control the deserialization
 				switch field.Name {
-				case "Attribute", "Tag":
+				// Legacy query-protocol field names ("Attribute", "Tag") and their
+				// current struct names ("Attributes", "Tags"). Modern SDKs use JSON
+				// via RegisterHTTPHandlers; this path can be removed once no
+				// form-urlencoded clients remain.
+				case "Attribute", "Attributes", "Tag", "Tags":
 					mapKey := r.FormValue(fmt.Sprintf("%s.%d.Key", fieldSingular, i))
 					mapValue := r.FormValue(fmt.Sprintf("%s.%d.Value", fieldSingular, i))
 					if mapKey == "" && mapValue == "" {

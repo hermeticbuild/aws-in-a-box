@@ -3,9 +3,9 @@ package sqs
 import "encoding/xml"
 
 type CreateQueueInput struct {
-	Attribute map[string]string
-	QueueName string
-	Tag       map[string]string
+	Attributes map[string]string
+	QueueName  string
+	Tags       map[string]string
 }
 
 type CreateQueueOutput struct {

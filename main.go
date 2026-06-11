@@ -69,7 +69,7 @@ func main() {
 	s3InitialBuckets := flag.String("s3InitialBuckets", "", "Buckets to create at startup. Example: bucket1,bucket2,bucket3")
 
 	enableSQS := flag.Bool("enableSQS", true, "Enable SQS service")
-	sqsInitialQueues := flag.String("sqsInitialQueues", "", "Queues to create at startup. Example: queue1,queue2,queue3")
+	sqsInitialQueues := flag.String("sqsInitialQueues", "", "Queues to create at startup. Names ending in .fifo are created as FIFO queues with content-based deduplication. Example: queue1,queue2,queue3.fifo")
 
 	flag.Parse()
 
@@ -155,8 +155,14 @@ func main() {
 			if name == "" {
 				continue
 			}
+			attrs := map[string]string{}
+			if strings.HasSuffix(name, ".fifo") {
+				attrs[sqs.AttrFifoQueue] = "true"
+				attrs[sqs.AttrContentBasedDeduplication] = "true"
+			}
 			s.CreateQueue(sqs.CreateQueueInput{
-				QueueName: name,
+				QueueName:  name,
+				Attributes: attrs,
 			})
 		}
 		// Register JSON handler
