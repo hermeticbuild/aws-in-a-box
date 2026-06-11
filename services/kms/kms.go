@@ -102,7 +102,7 @@ func New(options Options) (*KMS, error) {
 		logger:       options.Logger,
 		arnGenerator: options.ArnGenerator,
 		persistDir:   options.PersistDir,
-		aliases:      make(map[string]KeyId),
+		aliases:      aliases,
 		keys:         keys,
 	}, nil
 }

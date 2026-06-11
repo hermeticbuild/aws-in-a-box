@@ -421,3 +421,60 @@ func TestInvalidCiphertext(t *testing.T) {
 		t.Fatal("bad err", err)
 	}
 }
+
+func TestPersistedAliasesSurviveRestart(t *testing.T) {
+	options := kmsOptions
+	options.PersistDir = t.TempDir()
+
+	k, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createOutput, awserr := k.CreateKey(CreateKeyInput{})
+	if awserr != nil {
+		t.Fatal(awserr)
+	}
+	keyId := createOutput.KeyMetadata.KeyId
+
+	aliasName := "alias/persisted"
+	_, awserr = k.CreateAlias(CreateAliasInput{
+		AliasName:   aliasName,
+		TargetKeyId: keyId,
+	})
+	if awserr != nil {
+		t.Fatal(awserr)
+	}
+
+	plaintext := []byte("The quick brown fox jumps over the lazy dog")
+	encryptOutput, awserr := k.Encrypt(EncryptInput{
+		KeyId:     aliasName,
+		Plaintext: plaintext,
+	})
+	if awserr != nil {
+		t.Fatal(awserr)
+	}
+
+	// Simulate a restart by building a fresh KMS from the same persist dir.
+	restarted, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	describeOutput, awserr := restarted.DescribeKey(DescribeKeyInput{KeyId: aliasName})
+	if awserr != nil {
+		t.Fatal(awserr)
+	}
+	if describeOutput.KeyMetadata.KeyId != keyId {
+		t.Fatalf("alias resolves to %v, want %v", describeOutput.KeyMetadata.KeyId, keyId)
+	}
+
+	decryptOutput, awserr := restarted.Decrypt(DecryptInput{
+		CiphertextBlob: encryptOutput.CiphertextBlob,
+	})
+	if awserr != nil {
+		t.Fatal(awserr)
+	}
+	if !bytes.Equal(plaintext, decryptOutput.Plaintext) {
+		t.Fatalf("bad decryption result; got %v, want %v", decryptOutput.Plaintext, plaintext)
+	}
+}
