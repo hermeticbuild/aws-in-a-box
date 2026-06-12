@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -638,4 +640,88 @@ func TestFifoQueue_MessageGroupIsolation(t *testing.T) {
 	if *resp1.Messages[0].Body == *resp2.Messages[0].Body {
 		t.Fatal("Both receives returned the same message; groups are not isolated")
 	}
+}
+
+// startQueryProtocolServer starts an SQS emulator and returns its base URL.
+// Callers drive it with raw form-urlencoded (legacy query protocol) requests
+// rather than the JSON SDK used by the tests above.
+func startQueryProtocolServer(t *testing.T) string {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl := sqsImpl.New(sqsImpl.Options{
+		ArnGenerator: arn.Generator{AwsAccountId: "123456789012", Region: "us-east-1"},
+	})
+	methodRegistry := make(map[string]http.HandlerFunc)
+	impl.RegisterHTTPHandlers(slog.Default(), methodRegistry)
+	srv := server.NewWithHandlerChain(
+		server.HandlerFuncFromRegistry(slog.Default(), methodRegistry),
+		sqsImpl.NewHandler(slog.Default(), impl),
+	)
+	go srv.Serve(listener)
+	t.Cleanup(func() { srv.Close() })
+	return "http://" + listener.Addr().String()
+}
+
+func postQuery(t *testing.T, baseURL string, form url.Values) string {
+	t.Helper()
+	// A decode panic aborts the connection mid-response, surfacing here as a
+	// transport error ("socket hang up") rather than an HTTP status.
+	resp, err := http.PostForm(baseURL, form)
+	if err != nil {
+		t.Fatalf("query-protocol request failed (server panic?): %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	return string(body)
+}
+
+// Regression test for the legacy query/form-urlencoded protocol. The JSON SDK
+// tests above never exercise this decode path, so two crashes shipped:
+//   - FIFO CreateQueue: queue attributes arrive as Attribute.N.Name (tags use
+//     Tag.N.Key), but the decoder read .Key for both and panicked.
+//   - ReceiveMessage: AttributeNames is []SystemAttributeName, and appending a
+//     bare string to it via reflect panicked.
+func TestQueryProtocol_FifoAndSystemAttributes(t *testing.T) {
+	baseURL := startQueryProtocolServer(t)
+
+	postQuery(t, baseURL, url.Values{
+		"Action":            {"CreateQueue"},
+		"Version":           {"2012-11-05"},
+		"QueueName":         {"test-queue.fifo"},
+		"Attribute.1.Name":  {"FifoQueue"},
+		"Attribute.1.Value": {"true"},
+	})
+
+	postQuery(t, baseURL, url.Values{
+		"Action":                 {"SendMessage"},
+		"Version":                {"2012-11-05"},
+		"QueueUrl":               {"test-queue.fifo"},
+		"MessageBody":            {"hello"},
+		"MessageGroupId":         {"g1"},
+		"MessageDeduplicationId": {"d1"},
+	})
+
+	body := postQuery(t, baseURL, url.Values{
+		"Action":          {"ReceiveMessage"},
+		"Version":         {"2012-11-05"},
+		"QueueUrl":        {"test-queue.fifo"},
+		"AttributeName.1": {"All"},
+	})
+	if !strings.Contains(body, "hello") {
+		t.Fatalf("expected the sent message in the receive response, got: %s", body)
+	}
+
+	// Tags decode by Tag.N.Key (not .Name) and must keep working.
+	postQuery(t, baseURL, url.Values{
+		"Action":      {"CreateQueue"},
+		"Version":     {"2012-11-05"},
+		"QueueName":   {"tagged-queue"},
+		"Tag.1.Key":   {"team"},
+		"Tag.1.Value": {"infra"},
+	})
 }
