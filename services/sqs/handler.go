@@ -92,7 +92,9 @@ func unmarshal(r *http.Request, target any) error {
 				if v == "" {
 					break
 				}
-				f.Set(reflect.Append(f, reflect.ValueOf(v)))
+				// Element may be a defined string type (e.g. []SystemAttributeName);
+				// a bare string isn't assignable under reflect.Append, so convert.
+				f.Set(reflect.Append(f, reflect.ValueOf(v).Convert(f.Type().Elem())))
 			}
 		case reflect.Map:
 			// Initialize the map and then read as many elements as we can.
@@ -107,7 +109,13 @@ func unmarshal(r *http.Request, target any) error {
 				// via RegisterHTTPHandlers; this path can be removed once no
 				// form-urlencoded clients remain.
 				case "Attribute", "Attributes", "Tag", "Tags":
-					mapKey := r.FormValue(fmt.Sprintf("%s.%d.Key", fieldSingular, i))
+					// The SQS query protocol encodes queue attributes as
+					// Attribute.N.Name/.Value but tags as Tag.N.Key/.Value.
+					subKey := "Name"
+					if fieldSingular == "Tag" {
+						subKey = "Key"
+					}
+					mapKey := r.FormValue(fmt.Sprintf("%s.%d.%s", fieldSingular, i, subKey))
 					mapValue := r.FormValue(fmt.Sprintf("%s.%d.Value", fieldSingular, i))
 					if mapKey == "" && mapValue == "" {
 						break EntriesLoop
